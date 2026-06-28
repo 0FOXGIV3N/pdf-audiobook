@@ -1,0 +1,65 @@
+[
+  {
+    "id": "chapter_1_title_present",
+    "description": "Chapter 1 title should render before the chapter body.",
+    "file": "narration/narration_006.txt",
+    "must_contain": "Chapter 1: Computers as Creative Tools",
+    "expected": "pass"
+  },
+  {
+    "id": "chapter_1_subtitle_present",
+    "description": "Chapter 1 subtitle should render as its own narration line.",
+    "file": "narration/narration_006.txt",
+    "must_contain": "Digital Creativity and the Dawn of AI-Art",
+    "expected": "pass"
+  },
+  {
+    "id": "chapter_1_indented_paragraph_recovered",
+    "description": "Known indented paragraph on printed page 1 should be recovered.",
+    "file": "narration/narration_006.txt",
+    "must_contain": "Creators and art collectives incorporating emerging technologies in their creative process is not a new thing.",
+    "expected": "pass"
+  },
+  {
+    "id": "chapter_1_footnote_1_preserved",
+    "description": "Footnote 1 should remain available in narration for now.",
+    "file": "narration/narration_006.txt",
+    "must_contain": "Footnote 1. I will use the term artist and creator interchangeably",
+    "expected": "pass"
+  },
+  {
+    "id": "standalone_marker_2_removed",
+    "description": "Standalone footnote marker 2 should not render as a separate paragraph.",
+    "file": "narration/narration_006.txt",
+    "must_not_match_line": "^2$",
+    "expected": "pass"
+  },
+  {
+    "id": "standalone_year_1982_removed",
+    "description": "Standalone citation year 1982 should not render as a separate paragraph.",
+    "file": "narration/narration_006.txt",
+    "must_not_match_line": "^1982$",
+    "expected": "pass"
+  },
+  {
+    "id": "standalone_year_1968_removed",
+    "description": "Standalone citation year 1968 should not render as a separate paragraph.",
+    "file": "narration/narration_006.txt",
+    "must_not_match_line": "^1968$",
+    "expected": "pass"
+  },
+  {
+    "id": "inline_italic_artwork_title_recovered",
+    "description": "Inline italic artwork title after 'African digital art' should not be dropped.",
+    "file": "narration/narration_006.txt",
+    "must_contain": "Lastly, computational creativity has also found a home in African digital art. Stone Orgasms by Angolan artist Keyezua",
+    "expected": "pass"
+  },
+  {
+    "id": "figure_caption_preserved",
+    "description": "Figure caption should remain available in narration until figure-caption settings exist.",
+    "file": "narration/narration_006.txt",
+    "must_contain": "Fig. 1.1 Photograph of Hito Steyerl's video installation SocialSim",
+    "expected": "pass"
+  }
+]

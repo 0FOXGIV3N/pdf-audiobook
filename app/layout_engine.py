@@ -732,7 +732,9 @@ class LayoutEngine:
 
     def _page_to_ocr_lines(self, page, page_number):
         # Use a moderate scale: high enough for small academic text, not so high
-        # that OCR becomes painfully slow.
+        # that OCR becomes painfully slow. This is the fast/stable single-pass
+        # OCR path. Multi-pass OCR was tested and reverted because it slowed the
+        # pipeline significantly without fixing the inline italic edge case.
         scale = float(os.getenv("OCR_SCALE", "3.0"))
         matrix = fitz.Matrix(scale, scale)
         pix = page.get_pixmap(matrix=matrix, alpha=False)
@@ -759,7 +761,7 @@ class LayoutEngine:
             except OSError:
                 pass
 
-    def _parse_tesseract_tsv(self, tsv_text, page_number, scale):
+    def _parse_tesseract_tsv(self, tsv_text, page_number, scale, min_conf=None):
         groups = {}
         lines = tsv_text.splitlines()
         if not lines:
@@ -790,7 +792,9 @@ class LayoutEngine:
                 conf = float(cols[index["conf"]])
             except ValueError:
                 conf = -1
-            if conf < float(os.getenv("OCR_MIN_CONF", "35")):
+            if min_conf is None:
+                min_conf = float(os.getenv("OCR_MIN_CONF", "35"))
+            if conf < min_conf:
                 continue
 
             try:

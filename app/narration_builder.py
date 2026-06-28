@@ -1,38 +1,61 @@
 import json
 import re
 
-
-_MARKER_PATTERNS = [
-    # Footnote marker by itself: 1, 2, 3, etc.
-    re.compile(r"^\d{1,3}$"),
-
-    # Standalone citation year: 1968, 1982, 2008, etc.
-    re.compile(r"^(?:18|19|20)\d{2}$"),
-
-    # Figure/reference debris: 1.1 1988 2008, 2.3 1999, etc.
-    re.compile(r"^\d+(?:\.\d+)+(?:\s+(?:18|19|20)\d{2})+$"),
-
-    # Multiple standalone years: 1988 2008
-    re.compile(r"^(?:(?:18|19|20)\d{2})(?:\s+(?:18|19|20)\d{2})+$"),
-
-    # OCR punctuation fragments / extraction debris
-    re.compile(r"^[=\-–—_\s{}\[\]()]+$"),
-]
+from narration_engine import NarrationEngine, build_postprocess_report
+from element_cleaner import ElementCleaner, build_element_cleanup_report
 
 
 def clean_intro_title(title: str) -> str:
-    return title.strip()
+    return (title or "").strip()
+
+
+def _norm_key(text: str) -> str:
+    text = re.sub(r"\s+", " ", (text or "").strip()).lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def ensure_chapter_title_prefix(text: str, chapter_title: str) -> str:
+    """Force the manifest/chapter metadata title to be the first spoken block.
+
+    This protects the real chapter title from element-level duplicate-heading
+    cleanup. It also prevents the title from disappearing when the page's
+    visual heading is removed as a duplicate.
+    """
+    text = (text or "").strip()
+    chapter_title = clean_intro_title(chapter_title)
+    if not chapter_title:
+        return text
+
+    first_block = re.split(r"\n\s*\n", text, maxsplit=1)[0].strip() if text else ""
+    if _norm_key(first_block) == _norm_key(chapter_title):
+        return text
+
+    # If the title appears later as a standalone block, remove that duplicate
+    # before prefixing it cleanly at the top.
+    blocks = [b.strip() for b in re.split(r"\n\s*\n", text) if b.strip()]
+    blocks = [b for b in blocks if _norm_key(b) != _norm_key(chapter_title)]
+    return (chapter_title + "\n\n" + "\n\n".join(blocks)).strip()
+
+
+def final_presentation_cleanup(text: str) -> str:
+    text = text or ""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def remove_duplicate_chapter_heading(body: str, chapter_title: str) -> str:
-    body = body.strip()
+    """Legacy fallback for chapters without structured elements."""
+    body = (body or "").strip()
 
     if chapter_title.strip():
-        # Removes repeated first-line chapter heading if present
         pattern = re.escape(chapter_title.strip())
         body = re.sub(rf"^{pattern}\s*", "", body, flags=re.I)
 
-    # Removes "CHAPTER 1 Computers as Creative Tools" style heading from body
     body = re.sub(
         r"^CHAPTER\s+\d+\s+[A-Z][A-Za-z0-9 ,:\-–—]+?\s+",
         "",
@@ -43,95 +66,97 @@ def remove_duplicate_chapter_heading(body: str, chapter_title: str) -> str:
     return body.strip()
 
 
-def is_standalone_marker(text: str) -> bool:
-    """
-    Detects tiny standalone OCR/PDF extraction markers that should not be narrated.
-
-    Important: this only runs on isolated lines / isolated paragraphs. It does not
-    remove numbers or years inside real sentences.
-    """
-    stripped = re.sub(r"\s+", " ", text.strip())
-
-    if not stripped:
-        return True
-
-    return any(pattern.fullmatch(stripped) for pattern in _MARKER_PATTERNS)
-
-
-def remove_standalone_marker_lines(text: str) -> str:
-    """
-    Final export safety filter.
-
-    This catches isolated markers that slipped through earlier layout stages, such as:
-        2
-        1968
-        1982
-        1.1 1988 2008
-
-    It keeps those values when they are part of actual prose.
-    """
-    # Work paragraph by paragraph so we can preserve intentional paragraph breaks.
-    paragraphs = re.split(r"\n\s*\n", text.strip())
-    cleaned_paragraphs = []
-
-    for paragraph in paragraphs:
-        lines = paragraph.splitlines()
-        kept_lines = []
-
-        for line in lines:
-            if is_standalone_marker(line):
-                continue
-            kept_lines.append(line.rstrip())
-
-        cleaned = "\n".join(kept_lines).strip()
-
-        if not cleaned:
-            continue
-
-        # If the whole paragraph collapsed to a marker, skip it.
-        if is_standalone_marker(cleaned):
-            continue
-
-        cleaned_paragraphs.append(cleaned)
-
-    output = "\n\n".join(cleaned_paragraphs)
-
-    # Collapse excessive vertical whitespace caused by removed marker paragraphs.
-    output = re.sub(r"\n{3,}", "\n\n", output)
-
-    return output.strip()
-
-
 def write_narration_files(manifest, chapters_dir, narration_dir):
+    """
+    Phase 3 narration export.
+
+    Writes two versions:
+    - narration_raw/: readable structured narration before cleanup
+    - narration/: final narration after Narration Engine cleanup
+
+    Also writes:
+    - postprocess_report.txt
+    """
     narration_dir.mkdir(exist_ok=True)
 
+    output_root = narration_dir.parent
+    raw_dir = output_root / "narration_raw"
+    raw_dir.mkdir(exist_ok=True)
+
+    cleaner = ElementCleaner()
+    engine = NarrationEngine()
+    cleanup_stats_items = []
+    stats_items = []
     written = []
 
     for chapter in manifest["chapters"]:
         chapter_id = chapter["id"]
+        chapter_title = clean_intro_title(chapter.get("title", ""))
 
         chapter_files = sorted(chapters_dir.glob(f"chapter_{chapter_id:03d}_*.json"))
-
         if not chapter_files:
             continue
 
         with open(chapter_files[0], "r", encoding="utf-8") as f:
             chapter_data = json.load(f)
 
-        intro = clean_intro_title(chapter_data.get("title", ""))
-        body = chapter_data.get("speech_text", "")
-        body = remove_duplicate_chapter_heading(body, intro)
-        body = remove_standalone_marker_lines(body)
+        intro = clean_intro_title(chapter_data.get("title") or chapter_title)
+        elements = chapter_data.get("elements") or []
 
-        narration_text = f"{intro}\n\n{body}".strip()
-        narration_text = remove_standalone_marker_lines(narration_text)
+        if elements:
+            cleaned_elements, cleanup_stats = cleaner.clean_chapter_elements(
+                elements,
+                chapter_id=chapter_id,
+                chapter_title=intro,
+            )
+            cleanup_stats_items.append(cleanup_stats)
+
+            raw_narration_text = engine.render_raw_chapter_elements(elements, intro)
+            final_narration_text, stats = engine.process_chapter_elements(
+                cleaned_elements,
+                chapter_id=chapter_id,
+                chapter_title=intro,
+            )
+
+            raw_narration_text = ensure_chapter_title_prefix(raw_narration_text, intro)
+            final_narration_text = ensure_chapter_title_prefix(final_narration_text, intro)
+        else:
+            body = chapter_data.get("speech_text", "")
+            body = remove_duplicate_chapter_heading(body, intro)
+            raw_narration_text = f"{intro}\n\n{body}".strip()
+            final_narration_text, stats = engine.process_chapter_text(
+                raw_narration_text,
+                chapter_id=chapter_id,
+                chapter_title=intro,
+            )
+
+            raw_narration_text = ensure_chapter_title_prefix(raw_narration_text, intro)
+            final_narration_text = ensure_chapter_title_prefix(final_narration_text, intro)
+
+        stats.raw_characters = len(raw_narration_text)
+        stats_items.append(stats)
 
         filename = f"narration_{chapter_id:03d}.txt"
-        path = narration_dir / filename
+        raw_path = raw_dir / filename
+        final_path = narration_dir / filename
 
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(narration_text)
+        raw_narration_text = final_presentation_cleanup(raw_narration_text)
+        final_narration_text = final_presentation_cleanup(final_narration_text)
 
-        written.append(str(path))
+        with open(raw_path, "w", encoding="utf-8") as f:
+            f.write(raw_narration_text)
+
+        with open(final_path, "w", encoding="utf-8") as f:
+            f.write(final_narration_text)
+
+        written.append(str(final_path))
+
+    cleanup_report_path = output_root / "element_cleanup_report.txt"
+    with open(cleanup_report_path, "w", encoding="utf-8") as f:
+        f.write(build_element_cleanup_report(cleanup_stats_items))
+
+    report_path = output_root / "postprocess_report.txt"
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(build_postprocess_report(stats_items))
 
     return written
