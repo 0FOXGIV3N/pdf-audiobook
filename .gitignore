@@ -1,0 +1,26 @@
+output/
+input/*.pdf
+__pycache__/
+*.pyc
+.env
+.DS_Store
+# Python
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build/debug artifacts
+output/
+debug/
+.cache/

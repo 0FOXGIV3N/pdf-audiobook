@@ -1,0 +1,11 @@
+services:
+  pdf-audiobook:
+    build: .
+    volumes:
+      - ./input:/input
+      - ./output:/output
+    environment:
+      PDF_FILE: /input/book.pdf
+      OUTPUT_DIR: /output
+      PAGES_PER_FILE: 10
+      VOICE: af_heart
