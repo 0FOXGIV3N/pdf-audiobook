@@ -1,6 +1,11 @@
 services:
   pdf-audiobook:
-    build: .
+    build:
+      context: .
+      args:
+        TORCH_VARIANT: cuda
+        TORCH_CUDA_INDEX_URL: https://download.pytorch.org/whl/cu121
+    gpus: all
     volumes:
       - ./input:/input
       - ./output:/output
@@ -9,3 +14,12 @@ services:
       OUTPUT_DIR: /output
       PAGES_PER_FILE: 10
       VOICE: af_heart
+      KOKORO_DEVICE: auto
+      KOKORO_GPU_DEVICE: 0
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      OLLAMA_HOST: http://host.docker.internal:11434
+      OLLAMA_MODEL: qwen3:8b
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["python", "/app/run_pipeline.py"]
