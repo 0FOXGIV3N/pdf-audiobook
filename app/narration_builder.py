@@ -3,6 +3,7 @@ import re
 
 from narration_engine import NarrationEngine, build_postprocess_report
 from element_cleaner import ElementCleaner, build_element_cleanup_report
+from pipeline_status import PipelineStatus
 
 
 def clean_intro_title(title: str) -> str:
@@ -36,6 +37,88 @@ def ensure_chapter_title_prefix(text: str, chapter_title: str) -> str:
     blocks = [b.strip() for b in re.split(r"\n\s*\n", text) if b.strip()]
     blocks = [b for b in blocks if _norm_key(b) != _norm_key(chapter_title)]
     return (chapter_title + "\n\n" + "\n\n".join(blocks)).strip()
+
+
+def _ends_with_sentence_punctuation(text: str) -> bool:
+    return bool(re.search(r"[.!?]['\")\]]?$", (text or "").strip()))
+
+
+def _add_terminal_period(text: str) -> str:
+    text = (text or "").strip()
+    if text and not _ends_with_sentence_punctuation(text):
+        return text + "."
+    return text
+
+
+def _looks_like_intro_subtitle(block: str) -> bool:
+    """Conservative subtitle detector for the opening of a chapter.
+
+    This is intentionally limited to the second spoken block after the
+    chapter title has already been prefixed. It is not a general heading
+    detector and it does not change parser output.
+    """
+    block = re.sub(r"\s+", " ", (block or "").strip())
+    if not block:
+        return False
+
+    words = block.split()
+    if len(words) > 18:
+        return False
+
+    if _ends_with_sentence_punctuation(block):
+        return True
+
+    # Avoid treating normal body openings as subtitles.
+    body_starters = {
+        "a", "an", "as", "at", "by", "for", "from", "if", "in",
+        "it", "its", "on", "once", "the", "these", "this", "to",
+        "we", "when", "while", "with"
+    }
+    first = re.sub(r"[^A-Za-z]", "", words[0]).lower() if words else ""
+    if first in body_starters and len(words) > 8:
+        return False
+
+    alpha_words = [w for w in words if re.search(r"[A-Za-z]", w)]
+    if not alpha_words:
+        return False
+
+    capitalized = sum(1 for w in alpha_words if w[:1].isupper())
+    return (capitalized / max(1, len(alpha_words))) >= 0.45
+
+
+def punctuate_chapter_opening(text: str, chapter_title: str) -> str:
+    """Add TTS-friendly sentence punctuation to chapter opening blocks.
+
+    Only affects the narration presentation text written to narration/.
+    It does not modify parser output, chapter JSON elements, or extracted text.
+
+    Rules:
+    - First block is the chapter title and receives terminal punctuation.
+    - Second block receives terminal punctuation only if it looks like a
+      short subtitle/heading.
+    - Body text is left alone.
+    """
+    text = (text or "").strip()
+    if not text:
+        return text
+
+    blocks = [b.strip() for b in re.split(r"\n\s*\n", text) if b.strip()]
+    if not blocks:
+        return text
+
+    chapter_title = clean_intro_title(chapter_title)
+
+    # The title should already be first because ensure_chapter_title_prefix() ran,
+    # but keep this guarded so the function is safe for legacy chapters.
+    if chapter_title and _norm_key(blocks[0]) == _norm_key(chapter_title):
+        blocks[0] = _add_terminal_period(blocks[0])
+    elif re.match(r"^chapter\s+\d+\b", blocks[0], re.I):
+        blocks[0] = _add_terminal_period(blocks[0])
+
+    if len(blocks) > 1 and _looks_like_intro_subtitle(blocks[1]):
+        blocks[1] = _add_terminal_period(blocks[1])
+
+    return "\n\n".join(blocks).strip()
 
 
 def final_presentation_cleanup(text: str) -> str:
@@ -80,6 +163,7 @@ def write_narration_files(manifest, chapters_dir, narration_dir):
     narration_dir.mkdir(exist_ok=True)
 
     output_root = narration_dir.parent
+    status = PipelineStatus(output_root)
     raw_dir = output_root / "narration_raw"
     raw_dir.mkdir(exist_ok=True)
 
@@ -89,9 +173,23 @@ def write_narration_files(manifest, chapters_dir, narration_dir):
     stats_items = []
     written = []
 
-    for chapter in manifest["chapters"]:
+    chapters = manifest.get("chapters", [])
+    status.start_stage(
+        "Narration Generation",
+        total=len(chapters),
+        message="Writing narration TXT files",
+        extra={"narration_dir": str(narration_dir)},
+    )
+
+    for chapter_index, chapter in enumerate(chapters, start=1):
         chapter_id = chapter["id"]
         chapter_title = clean_intro_title(chapter.get("title", ""))
+        status.update(
+            current=chapter_index - 1,
+            total=len(chapters),
+            item=f"chapter_{chapter_id:03d}",
+            message=f"Building narration for chapter {chapter_id}: {chapter_title}",
+        )
 
         chapter_files = sorted(chapters_dir.glob(f"chapter_{chapter_id:03d}_*.json"))
         if not chapter_files:
@@ -133,6 +231,9 @@ def write_narration_files(manifest, chapters_dir, narration_dir):
             raw_narration_text = ensure_chapter_title_prefix(raw_narration_text, intro)
             final_narration_text = ensure_chapter_title_prefix(final_narration_text, intro)
 
+        raw_narration_text = punctuate_chapter_opening(raw_narration_text, intro)
+        final_narration_text = punctuate_chapter_opening(final_narration_text, intro)
+
         stats.raw_characters = len(raw_narration_text)
         stats_items.append(stats)
 
@@ -150,6 +251,13 @@ def write_narration_files(manifest, chapters_dir, narration_dir):
             f.write(final_narration_text)
 
         written.append(str(final_path))
+        status.update(
+            current=chapter_index,
+            total=len(chapters),
+            item=f"chapter_{chapter_id:03d}",
+            message=f"Wrote {filename}",
+            extra={"last_narration_file": str(final_path)},
+        )
 
     cleanup_report_path = output_root / "element_cleanup_report.txt"
     with open(cleanup_report_path, "w", encoding="utf-8") as f:
@@ -159,4 +267,8 @@ def write_narration_files(manifest, chapters_dir, narration_dir):
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(build_postprocess_report(stats_items))
 
+    status.finish_stage(
+        message="Narration generation complete",
+        extra={"narration_files_written": len(written)},
+    )
     return written

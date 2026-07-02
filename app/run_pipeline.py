@@ -17,7 +17,7 @@ from pipeline_manager import PipelineManager, StageResult
 from render_book import BookRenderOptions, render_book
 
 
-PIPELINE_VERSION = "phase6_one_command_pipeline_v1.2"
+PIPELINE_VERSION = "phase6_one_command_pipeline_v1.3"
 DEFAULT_OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "/output"))
 DEFAULT_INPUT_DIR = Path(os.getenv("INPUT_DIR", "/input"))
 
@@ -323,38 +323,64 @@ def _discover_pdf(input_dir: Path, explicit_pdf: Optional[str | Path] = None) ->
 
 
 def _safe_book_folder_name(pdf_path: Path) -> str:
+    """Return the expected book folder name for the current PDF.
+
+    Keep spaces because the existing initial builder, pdf_to_mp3.py, creates
+    folders from the PDF title with spaces preserved. Earlier versions of this
+    orchestrator converted spaces to underscores, which caused confusing status
+    paths such as:
+
+        /output/Project_Mary_Hail
+
+    while the real build output was:
+
+        /output/Project Mary Hail
+
+    The resolver below still handles older underscore folders when rerunning
+    previous books.
+    """
     stem = pdf_path.stem.strip() or "Book"
     stem = re.sub(r"[^A-Za-z0-9._ -]+", "", stem)
-    stem = re.sub(r"\s+", "_", stem)
+    stem = re.sub(r"\s+", " ", stem).strip()
     return stem or "Book"
 
 
 def _find_book_root(output_base: Path, pdf_path: Path, expected: Path) -> Path:
     """Resolve the canonical output folder created by the initial build.
 
-    Do not treat an existing empty/report-only expected folder as valid. The
-    PipelineManager may create a status directory before the parser runs, so the
-    only valid book_root is a folder that contains the initial build outputs.
+    The initial builder is the source of truth for the final folder name. This
+    resolver intentionally prefers folders that match the current PDF stem, with
+    or without spaces/underscores, and avoids falling back to an unrelated older
+    book unless no better match exists.
     """
     if _initial_outputs_ready(expected):
         return expected
 
-    candidates = []
-    if output_base.exists():
-        for path in output_base.iterdir():
-            if path.is_dir() and _initial_outputs_ready(path):
-                candidates.append(path)
+    if not output_base.exists():
+        return expected
+
+    candidates = [path for path in output_base.iterdir() if path.is_dir() and _initial_outputs_ready(path)]
     if not candidates:
         return expected
 
     expected_norm = _norm(expected.name)
     pdf_norm = _norm(pdf_path.stem)
+
+    exact_matches = []
+    partial_matches = []
     for candidate in candidates:
         c_norm = _norm(candidate.name)
-        if c_norm == expected_norm or c_norm == pdf_norm or expected_norm in c_norm or pdf_norm in c_norm:
-            return candidate
+        if c_norm in {expected_norm, pdf_norm}:
+            exact_matches.append(candidate)
+        elif expected_norm in c_norm or pdf_norm in c_norm:
+            partial_matches.append(candidate)
 
-    return sorted(candidates, key=lambda p: p.stat().st_mtime)[-1]
+    if exact_matches:
+        return sorted(exact_matches, key=lambda p: p.stat().st_mtime)[-1]
+    if partial_matches:
+        return sorted(partial_matches, key=lambda p: p.stat().st_mtime)[-1]
+
+    return expected
 
 
 def _find_existing_book_root(output_base: Path, pdf_path: Path, explicit_book_root: Optional[Path] = None) -> Optional[Path]:
@@ -419,10 +445,13 @@ def main() -> None:
     if explicit_book_root:
         book_root = explicit_book_root
     else:
-        # Prefer an existing completed initial-build folder. If none exists yet,
-        # use /output as a temporary placeholder; InitialBuildStage will resolve
-        # the canonical book_root after pdf_to_mp3.py creates it.
-        book_root = _find_existing_book_root(output_base, pdf_path) or output_base
+        # Always derive the expected book folder from the current PDF.
+        # Do not reuse the most recent completed folder in /output because that
+        # can accidentally continue work on a previous book when a new PDF is
+        # placed in /input. The initial build remains the source of truth and
+        # _find_book_root() will resolve the canonical folder name after
+        # pdf_to_mp3.py creates or updates it.
+        book_root = output_base / _safe_book_folder_name(pdf_path)
 
     options = PipelineOptions(
         pdf_path=pdf_path,

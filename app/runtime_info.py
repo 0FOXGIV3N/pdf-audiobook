@@ -111,44 +111,6 @@ def get_gpu_info() -> Dict[str, Any]:
     return info
 
 
-
-def get_summary_info() -> Dict[str, Any]:
-    """Return best-effort offline AI summary diagnostics.
-
-    This is intentionally non-fatal. Summary support is optional in Phase 6.5
-    v1.0, so failures here must never stop the audiobook pipeline.
-    """
-    default = {
-        "provider": "Ollama",
-        "installed": False,
-        "running": False,
-        "version": "Unavailable",
-        "model": os.getenv("OLLAMA_MODEL", "qwen3:8b"),
-        "model_available": False,
-        "available": False,
-        "reason": "Summary provider package is not available.",
-    }
-
-    try:
-        from summary.ollama import get_summary_provider
-
-        provider = get_summary_provider()
-        status = provider.status()
-        return {
-            "provider": "Ollama",
-            "installed": bool(status.installed),
-            "running": bool(status.running),
-            "version": status.version or "Unavailable",
-            "model": status.model,
-            "model_available": bool(status.model_available),
-            "available": bool(status.available),
-            "reason": status.reason or "",
-        }
-    except Exception as exc:
-        default["reason"] = f"Summary provider check failed: {exc}"
-        return default
-
-
 def get_runtime_info(pdf_path=None, output_dir=None) -> Dict[str, Any]:
     try:
         import fitz
@@ -178,7 +140,6 @@ def get_runtime_info(pdf_path=None, output_dir=None) -> Dict[str, Any]:
         "ffmpeg": _cmd_version("ffmpeg", ["-version"]),
         "kokoro": kokoro_status,
         "gpu": get_gpu_info(),
-        "summary": get_summary_info(),
         "pdf": Path(pdf_path).name if pdf_path else "None",
         "output": str(output_dir) if output_dir else "None",
     }
@@ -224,21 +185,6 @@ def print_startup_banner(pdf_path=None, output_dir=None):
 
     print(f"Kokoro Device    {gpu['selected_device']} ({gpu['selected_device_name']})")
     print(f"CUDA_VISIBLE     {gpu['cuda_visible_devices']}")
-
-    summary = info.get("summary", {})
-    print("")
-    print("AI Companion")
-    print("----------------------------------------------------")
-    print(f"AI Summary       {'✓ Enabled' if summary.get('available') else '- Skipped'}")
-    print(f"Provider         {summary.get('provider', 'Ollama')}")
-    print(f"Ollama Installed {'✓ Yes' if summary.get('installed') else '- No'}")
-    print(f"Ollama Running   {'✓ Yes' if summary.get('running') else '- No'}")
-    print(f"Ollama Version   {summary.get('version', 'Unavailable')}")
-    print(f"Model            {summary.get('model', 'qwen3:8b')}")
-    print(f"Model Available  {'✓ Yes' if summary.get('model_available') else '- No'}")
-    if not summary.get("available") and summary.get("reason"):
-        print(f"Summary Reason   {summary.get('reason')}")
-
     print("")
     print("Input / Output")
     print("----------------------------------------------------")

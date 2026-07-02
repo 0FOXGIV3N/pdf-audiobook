@@ -2,6 +2,7 @@ import json
 import re
 
 from speech_cleaner import build_speech_text_from_elements
+from pipeline_status import PipelineStatus
 
 
 def safe_filename(text):
@@ -12,8 +13,27 @@ def safe_filename(text):
 
 def write_chapter_files(book, manifest, chapters_dir):
     written = []
+    output_root = chapters_dir.parent
+    status = PipelineStatus(output_root)
+    chapters = manifest.get("chapters", [])
 
-    for chapter in manifest["chapters"]:
+    status.start_stage(
+        "Chapter JSON Writing",
+        total=len(chapters),
+        message="Writing chapter JSON files",
+        extra={"chapters_dir": str(chapters_dir)},
+    )
+
+    for index, chapter in enumerate(chapters, start=1):
+        chapter_id = chapter["id"]
+        chapter_title = chapter.get("title", f"Chapter {chapter_id}")
+        status.update(
+            current=index - 1,
+            total=len(chapters),
+            item=f"chapter_{chapter_id:03d}",
+            message=f"Preparing chapter {chapter_id}: {chapter_title}",
+        )
+
         start = chapter["start_page"]
         end = chapter["end_page"]
 
@@ -51,5 +71,16 @@ def write_chapter_files(book, manifest, chapters_dir):
             json.dump(chapter_data, f, indent=2, ensure_ascii=False)
 
         written.append(str(path))
+        status.update(
+            current=index,
+            total=len(chapters),
+            item=f"chapter_{chapter_id:03d}",
+            message=f"Wrote {filename}",
+            extra={"last_chapter_file": str(path)},
+        )
 
+    status.finish_stage(
+        message="Chapter JSON writing complete",
+        extra={"chapter_files_written": len(written)},
+    )
     return written
